@@ -21,14 +21,19 @@
       android:label="XrPresenceTest"
       android:hasCode="false"
       >
-    <!-- Meta Quest App ID - This will be replaced with the real one -->
+    <!-- Meta Quest App ID -->
     <meta-data
         android:name="com.oculus.ossplash"
         android:value="true"
         />
     <meta-data
         android:name="com.oculus.supportedDevices"
-        android:value="all"
+        android:value="quest3|questpro"
+        />
+    <!-- Focus aware - required for store upload -->
+    <meta-data
+        android:name="com.oculus.vr.focusaware"
+        android:value="true"
         />
     <activity
         android:name="android.app.NativeActivity"
@@ -44,6 +49,7 @@
           />
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />
+        <category android:name="com.oculus.intent.category.VR" />
         <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
         <category android:name="android.intent.category.LAUNCHER" />
       </intent-filter>

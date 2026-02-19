@@ -1,0 +1,21 @@
+# Android/Gradle build artifacts
+XrPresenceTest/Projects/Android/.gradle/
+XrPresenceTest/Projects/Android/.cxx/
+XrPresenceTest/Projects/Android/build/
+XrPresenceTest/Projects/Android/src/
+XrPresenceTest/Projects/Android/local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.log
+*.tmp
+
+# APK files (build outputs)
+*.apk

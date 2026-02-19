@@ -33,6 +33,9 @@
 #include "imgui/imgui.h"
 #include "imgui/imgui_impl_opengl3.h"
 
+// Oculus Platform SDK (includes all necessary headers)
+#include <OVR_Platform.h>
+
 #define TAG "XrPresenceTest"
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 #define ALOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
@@ -51,7 +54,7 @@ static const char* APP_ID = "33969008956076849";
 
 // UI Panel dimensions
 static const int UI_WIDTH = 1024;
-static const int UI_HEIGHT = 768;
+static const int UI_HEIGHT = 1183;
 
 // Forward declaration for error checking
 static XrInstance g_Instance = XR_NULL_HANDLE;
@@ -207,12 +210,22 @@ typedef struct {
     bool SessionActive;
     bool Running;
 
+    // Platform SDK state
+    bool PlatformInitialized;
+
     // Presence state
     bool PresenceSet;
     bool IsJoinable;
     char LobbyId[64];
+    char MatchSessionId[64];
     char StatusText[256];
     char LogBuffer[8192];
+
+    // Toggles for testing different parameter combinations
+    bool UseDestination;
+    bool UseLobbyId;
+    bool UseMatchSessionId;
+    bool UseIsJoinable;
 
     // Input state
     XrActionSet ActionSet;
@@ -256,7 +269,77 @@ static void AppendLog(const char* fmt, ...) {
 }
 
 // ================================================================================
-// Presence Functions (Mocked - replace with real Oculus Platform SDK)
+// Platform SDK Message Pump
+// ================================================================================
+static void ProcessPlatformMessages() {
+    ovrMessageHandle message = nullptr;
+    while ((message = ovr_PopMessage()) != nullptr) {
+        ovrMessageType msgType = ovr_Message_GetType(message);
+        bool isError = ovr_Message_IsError(message);
+
+        // Log ALL messages for debugging
+        ALOGI("Platform message received: type=%d, isError=%d", (int)msgType, isError);
+
+        switch (msgType) {
+            case ovrMessage_PlatformInitializeAndroidAsynchronous:
+                ALOGI("Got Platform init callback! isError=%d", isError);
+                if (isError) {
+                    ovrErrorHandle error = ovr_Message_GetError(message);
+                    const char* errMsg = ovr_Error_GetMessage(error);
+                    ALOGE("Platform init FAILED: %s", errMsg);
+                    AppendLog("Platform init FAILED: %s", errMsg);
+                } else {
+                    ALOGI("Platform SDK initialized successfully!");
+                    AppendLog("Platform SDK initialized successfully!");
+                    appState.PlatformInitialized = true;
+                }
+                break;
+
+            case ovrMessage_GroupPresence_Set:
+                if (isError) {
+                    ovrErrorHandle error = ovr_Message_GetError(message);
+                    AppendLog("GroupPresence_Set FAILED: %s", ovr_Error_GetMessage(error));
+                    appState.PresenceSet = false;
+                    appState.IsJoinable = false;
+                } else {
+                    AppendLog("Group presence set successfully!");
+                    appState.PresenceSet = true;
+                    appState.IsJoinable = true;
+                    snprintf(appState.StatusText, sizeof(appState.StatusText),
+                             "Presence SET - Ready to invite!");
+                }
+                break;
+
+            case ovrMessage_GroupPresence_LaunchInvitePanel:
+                if (isError) {
+                    ovrErrorHandle error = ovr_Message_GetError(message);
+                    AppendLog("LaunchInvitePanel FAILED: %s", ovr_Error_GetMessage(error));
+                } else {
+                    AppendLog("Invite panel closed");
+                }
+                break;
+
+            case ovrMessage_GroupPresence_Clear:
+                if (isError) {
+                    ovrErrorHandle error = ovr_Message_GetError(message);
+                    AppendLog("GroupPresence_Clear FAILED: %s", ovr_Error_GetMessage(error));
+                } else {
+                    AppendLog("Group presence cleared successfully");
+                }
+                break;
+
+            default:
+                // Log unknown message types for debugging
+                ALOGV("Unhandled Platform message type: %d", (int)msgType);
+                break;
+        }
+
+        ovr_FreeMessage(message);
+    }
+}
+
+// ================================================================================
+// Presence Functions (Real Oculus Platform SDK)
 // ================================================================================
 static void GenerateLobbyId() {
     snprintf(appState.LobbyId, sizeof(appState.LobbyId), "lobby_%d_%ld",
@@ -264,40 +347,87 @@ static void GenerateLobbyId() {
     AppendLog("Generated lobby ID: %s", appState.LobbyId);
 }
 
+static void GenerateMatchSessionId() {
+    snprintf(appState.MatchSessionId, sizeof(appState.MatchSessionId), "match_%d_%ld",
+             rand() % 10000, (long)time(NULL));
+    AppendLog("Generated match session ID: %s", appState.MatchSessionId);
+}
+
 static void SetGroupPresence() {
-    if (strlen(appState.LobbyId) == 0) {
-        GenerateLobbyId();
+    if (!appState.PlatformInitialized) {
+        AppendLog("ERROR: Platform SDK not initialized yet!");
+        return;
     }
 
-    AppendLog("Setting group presence...");
-    AppendLog("  Destination: %s", DESTINATION_API_NAME);
-    AppendLog("  LobbyId: %s", appState.LobbyId);
-    AppendLog("  IsJoinable: true");
+    AppendLog("Setting group presence with params:");
 
-    // TODO: Real SDK call
-    // ovr_GroupPresence_Set(options);
+    // Create and configure presence options
+    ovrGroupPresenceOptionsHandle options = ovr_GroupPresenceOptions_Create();
 
-    appState.PresenceSet = true;
-    appState.IsJoinable = true;
-    snprintf(appState.StatusText, sizeof(appState.StatusText),
-             "Presence SET - Ready to invite!");
-    AppendLog("Presence set successfully (MOCKED)");
+    if (appState.UseDestination) {
+        ovr_GroupPresenceOptions_SetDestinationApiName(options, DESTINATION_API_NAME);
+        AppendLog("  Destination: %s", DESTINATION_API_NAME);
+    } else {
+        AppendLog("  Destination: (not set)");
+    }
+
+    if (appState.UseLobbyId) {
+        if (strlen(appState.LobbyId) == 0) {
+            AppendLog("  WARNING: LobbyId enabled but empty!");
+        }
+        ovr_GroupPresenceOptions_SetLobbySessionId(options, appState.LobbyId);
+        AppendLog("  LobbyId: %s", appState.LobbyId);
+    } else {
+        AppendLog("  LobbyId: (not set)");
+    }
+
+    if (appState.UseMatchSessionId) {
+        if (strlen(appState.MatchSessionId) == 0) {
+            AppendLog("  WARNING: MatchSessionId enabled but empty!");
+        }
+        ovr_GroupPresenceOptions_SetMatchSessionId(options, appState.MatchSessionId);
+        AppendLog("  MatchSessionId: %s", appState.MatchSessionId);
+    } else {
+        AppendLog("  MatchSessionId: (not set)");
+    }
+
+    if (appState.UseIsJoinable) {
+        ovr_GroupPresenceOptions_SetIsJoinable(options, true);
+        AppendLog("  IsJoinable: true");
+    } else {
+        AppendLog("  IsJoinable: (not set)");
+    }
+
+    // Send the request (async - response handled in ProcessPlatformMessages)
+    ovrRequest req = ovr_GroupPresence_Set(options);
+    ALOGI("ovr_GroupPresence_Set request: %llu", (unsigned long long)req);
+
+    ovr_GroupPresenceOptions_Destroy(options);
+
+    snprintf(appState.StatusText, sizeof(appState.StatusText), "Setting presence...");
 }
 
 static void ClearGroupPresence() {
     AppendLog("Clearing group presence...");
 
-    // TODO: Real SDK call
-    // ovr_GroupPresence_Clear();
+    if (appState.PlatformInitialized) {
+        ovrRequest req = ovr_GroupPresence_Clear();
+        ALOGI("ovr_GroupPresence_Clear request: %llu", (unsigned long long)req);
+    }
 
     appState.PresenceSet = false;
     appState.IsJoinable = false;
     appState.LobbyId[0] = '\0';
+    appState.MatchSessionId[0] = '\0';
     snprintf(appState.StatusText, sizeof(appState.StatusText), "Presence cleared");
-    AppendLog("Presence cleared (MOCKED)");
 }
 
 static void LaunchInvitePanel() {
+    if (!appState.PlatformInitialized) {
+        AppendLog("ERROR: Platform SDK not initialized yet!");
+        return;
+    }
+
     if (!appState.PresenceSet || !appState.IsJoinable) {
         AppendLog("!! WARNING: Launching invite panel but:");
         if (!appState.PresenceSet) AppendLog("   - Presence NOT set!");
@@ -307,12 +437,16 @@ static void LaunchInvitePanel() {
 
     AppendLog("Launching invite panel...");
 
-    // TODO: Real SDK call
-    // ovr_GroupPresence_LaunchInvitePanel(options);
+    // Create invite options (can be NULL for defaults, but let's be explicit)
+    ovrInviteOptionsHandle options = ovr_InviteOptions_Create();
 
-    snprintf(appState.StatusText, sizeof(appState.StatusText),
-             "Invite panel launched (MOCKED)");
-    AppendLog("In real implementation, system panel would appear");
+    // Launch the system invite panel (async)
+    ovrRequest req = ovr_GroupPresence_LaunchInvitePanel(options);
+    ALOGI("ovr_GroupPresence_LaunchInvitePanel request: %llu", (unsigned long long)req);
+
+    ovr_InviteOptions_Destroy(options);
+
+    snprintf(appState.StatusText, sizeof(appState.StatusText), "Opening invite panel...");
 }
 
 static void TestBuggyFlow() {
@@ -407,6 +541,16 @@ static void RenderImGuiToTexture(GLuint targetTexture) {
     ImGui::Spacing();
 
     // Status
+    // Platform SDK status
+    if (appState.PlatformInitialized) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
+        ImGui::Text("Platform SDK: READY");
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.5f, 0.2f, 1.0f));
+        ImGui::Text("Platform SDK: Initializing...");
+    }
+    ImGui::PopStyleColor();
+
     if (appState.PresenceSet && appState.IsJoinable) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
     } else {
@@ -421,51 +565,50 @@ static void RenderImGuiToTexture(GLuint targetTexture) {
     if (strlen(appState.LobbyId) > 0) {
         ImGui::Text("Lobby: %s", appState.LobbyId);
     }
+    if (strlen(appState.MatchSessionId) > 0) {
+        ImGui::Text("Match: %s", appState.MatchSessionId);
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Action buttons - two columns
-    ImGui::Text("Individual Actions:");
+    // Parameter toggles - let users experiment
+    ImGui::Text("Parameters to include in SetPresence:");
+    ImGui::Checkbox("Destination", &appState.UseDestination);
+    ImGui::SameLine();
+    ImGui::Checkbox("LobbyId", &appState.UseLobbyId);
+    ImGui::Checkbox("MatchSessionId", &appState.UseMatchSessionId);
+    ImGui::SameLine();
+    ImGui::Checkbox("IsJoinable", &appState.UseIsJoinable);
+
+    ImGui::Spacing();
+    ImGui::Separator();
     ImGui::Spacing();
 
-    float buttonWidth = 280.0f;
+    float buttonWidth = 380.0f;
     float buttonHeight = 60.0f;
 
-    if (ImGui::Button("Generate Lobby", ImVec2(buttonWidth, buttonHeight))) {
+    // Simple numbered buttons - 2x2 grid
+    if (ImGui::Button("1. Generate Lobby", ImVec2(buttonWidth, buttonHeight))) {
         GenerateLobbyId();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Set Presence", ImVec2(buttonWidth, buttonHeight))) {
-        SetGroupPresence();
+    if (ImGui::Button("1b. Generate Match", ImVec2(buttonWidth, buttonHeight))) {
+        GenerateMatchSessionId();
     }
 
-    if (ImGui::Button("Clear Presence", ImVec2(buttonWidth, buttonHeight))) {
-        ClearGroupPresence();
+    if (ImGui::Button("2. Set Presence", ImVec2(buttonWidth, buttonHeight))) {
+        SetGroupPresence();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Open Invite Panel", ImVec2(buttonWidth, buttonHeight))) {
+    if (ImGui::Button("3. Open Invite Panel", ImVec2(buttonWidth, buttonHeight))) {
         LaunchInvitePanel();
     }
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::Text("Test Flows:");
-    ImGui::Spacing();
-
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.6f, 0.1f, 1.0f));
-    if (ImGui::Button("CORRECT Flow", ImVec2(buttonWidth, buttonHeight))) {
-        TestCorrectFlow();
-    }
-    ImGui::PopStyleColor();
-
-    ImGui::SameLine();
-
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.2f, 0.1f, 1.0f));
-    if (ImGui::Button("BUGGY Flow", ImVec2(buttonWidth, buttonHeight))) {
-        TestBuggyFlow();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.4f, 0.4f, 0.5f, 1.0f));
+    if (ImGui::Button("Clear / Reset", ImVec2(buttonWidth, buttonHeight))) {
+        ClearGroupPresence();
     }
     ImGui::PopStyleColor();
 
@@ -481,7 +624,7 @@ static void RenderImGuiToTexture(GLuint targetTexture) {
         ImGui::SetScrollHereY(1.0f);
     ImGui::EndChild();
 
-    if (ImGui::Button("Clear Log", ImVec2(140, 40))) {
+    if (ImGui::Button("Clear Log", ImVec2(200, 60))) {
         appState.LogBuffer[0] = '\0';
     }
 
@@ -717,6 +860,12 @@ void android_main(struct android_app* app) {
     appState.Running = true;
     strcpy(appState.StatusText, "Ready - Set presence before inviting!");
 
+    // Default toggles - all enabled (correct flow)
+    appState.UseDestination = true;
+    appState.UseLobbyId = true;
+    appState.UseMatchSessionId = false;  // Not commonly used
+    appState.UseIsJoinable = true;
+
     srand((unsigned int)time(NULL));
 
     // Initialize loader
@@ -811,6 +960,14 @@ void android_main(struct android_app* app) {
     AppendLog("App ID: %s", APP_ID);
     AppendLog("Destination: %s", DESTINATION_API_NAME);
     AppendLog("");
+
+    // Initialize Oculus Platform SDK
+    AppendLog("Initializing Platform SDK...");
+    ALOGI("Platform SDK init with APP_ID: %s", APP_ID);
+    AppendLog("Using APP_ID: %s", APP_ID);
+    ovrRequest initRequest = ovr_PlatformInitializeAndroidAsynchronous(APP_ID, app->activity->clazz, env);
+    ALOGI("Platform SDK init request: %llu", (unsigned long long)initRequest);
+
     AppendLog("Point controller at buttons");
     AppendLog("Pull trigger to click");
 
@@ -853,6 +1010,9 @@ void android_main(struct android_app* app) {
             }
             event = {XR_TYPE_EVENT_DATA_BUFFER};
         }
+
+        // Process Oculus Platform SDK messages (async responses)
+        ProcessPlatformMessages();
 
         if (!appState.SessionActive) {
             continue;
